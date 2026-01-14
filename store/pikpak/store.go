@@ -133,7 +133,6 @@ func (s *StoreClient) getFileByMagnetHash(ctx Ctx, hash string) (*File, error) {
 	}
 	return nil, nil
 }
-
 func (s *StoreClient) AddMagnet(params *store.AddMagnetParams) (*store.AddMagnetData, error) {
 	if params.Magnet == "" {
 		return nil, errors.New("torrent file not supported")
@@ -152,11 +151,11 @@ func (s *StoreClient) AddMagnet(params *store.AddMagnetParams) (*store.AddMagnet
 
 	data := &store.AddMagnetData{
 		Hash:    magnet.Hash,
-		Magnet:  magnet.Link,
-		Name:    "",
-		Size:    -1,
-		Status:  store.MagnetStatusQueued,
-		Files:   []store.MagnetFile{},
+		Magnet: magnet.Link,
+		Name:   "",
+		Size:   -1,
+		Status: store.MagnetStatusQueued,
+		Files:  []store.MagnetFile{},
 		AddedAt: time.Now(),
 	}
 
@@ -282,8 +281,21 @@ func (s *StoreClient) GenerateLink(params *store.GenerateLinkParams) (*store.Gen
 		err.StatusCode = http.StatusNotFound
 		return nil, err
 	}
+
+	// Pick best quality: origin first, else highest resolution
+	best := res.Data.Medias[0]
+	for _, m := range res.Data.Medias {
+		if m.IsOrigin {
+			best = m
+			break
+		}
+		if m.Video.Height > best.Video.Height {
+			best = m
+		}
+	}
+
 	data := &store.GenerateLinkData{
-		Link: res.Data.Medias[0].Link.URL,
+		Link: best.Link.URL,
 	}
 	return data, nil
 }
@@ -316,24 +328,6 @@ func (c *StoreClient) listFilesFlat(ctx Ctx, folderId string, result []store.Mag
 			Size:   toSize(f.Size),
 			Source: source,
 		}
-
-		if parent != nil {
-			file.Path = path.Join(parent.Path, file.Name)
-		}
-
-		if f.Kind == FileKindFolder {
-			result, err = c.listFilesFlat(ctx, f.Id, result, file, rootFolderId)
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			result = append(result, *file)
-		}
-	}
-
-	return result, nil
-}
-
 func (s *StoreClient) GetMagnet(params *store.GetMagnetParams) (*store.GetMagnetData, error) {
 	ctx := Ctx{Ctx: params.Ctx}
 	res, err := s.client.GetFile(&GetFileParams{
@@ -343,23 +337,31 @@ func (s *StoreClient) GetMagnet(params *store.GetMagnetParams) (*store.GetMagnet
 	if err != nil {
 		return nil, err
 	}
-	magnet, err := core.ParseMagnetLink(res.Data.Params.URL)
-	if err != nil {
-		return nil, err
+
+	// Allow both magnet-based and normal cloud files
+	hash := ""
+	if strings.HasPrefix(res.Data.Params.URL, "magnet:") {
+		magnet, err := core.ParseMagnetLink(res.Data.Params.URL)
+		if err == nil {
+			hash = magnet.Hash
+		}
 	}
+
 	addedAt, err := time.Parse(time.RFC3339, res.Data.CreatedTime)
 	if err != nil {
 		addedAt = time.Unix(0, 0)
 	}
+
 	data := &store.GetMagnetData{
 		Id:      res.Data.Id,
 		Name:    res.Data.Name,
-		Hash:    magnet.Hash,
+		Hash:    hash, // empty for normal cloud files
 		Size:    -1,
 		Status:  store.MagnetStatusDownloading,
 		Files:   []store.MagnetFile{},
 		AddedAt: addedAt,
 	}
+
 	if res.Data.Phase == FilePhaseComplete {
 		data.Status = store.MagnetStatusDownloaded
 		if res.Data.Kind == FileKindFolder {
@@ -464,24 +466,25 @@ func (s *StoreClient) ListMagnets(params *store.ListMagnetsParams) (*store.ListM
 				if err != nil {
 					addedAt = time.Unix(0, 0)
 				}
-				if !strings.HasPrefix(f.Params.URL, "magnet:") {
-					continue
+
+				// Allow both magnet and normal cloud files
+				hash := ""
+				if strings.HasPrefix(f.Params.URL, "magnet:") {
+					magnet, err := core.ParseMagnetLink(f.Params.URL)
+					if err == nil {
+						hash = magnet.Hash
+					}
 				}
-				magnet, err := core.ParseMagnetLink(f.Params.URL)
-				if err != nil {
-					continue
-				}
+
 				item := store.ListMagnetsDataItem{
 					Id:      f.Id,
 					Name:    f.Name,
-					Hash:    magnet.Hash,
+					Hash:    hash, // empty for normal cloud files
 					Size:    toSize(f.Size),
-					Status:  store.MagnetStatusDownloading,
+					Status:  store.MagnetStatusDownloaded,
 					AddedAt: addedAt,
 				}
-				if f.Phase == FilePhaseComplete {
-					item.Status = store.MagnetStatusDownloaded
-				}
+
 				items = append(items, item)
 			}
 
@@ -528,4 +531,20 @@ func (s *StoreClient) RemoveMagnet(params *store.RemoveMagnetParams) (*store.Rem
 		Id: params.Id,
 	}
 	return data, nil
+}
+		if parent != nil {
+			file.Path = path.Join(parent.Path, file.Name)
+		}
+
+		if f.Kind == FileKindFolder {
+			result, err = c.listFilesFlat(ctx, f.Id, result, file, rootFolderId)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			result = append(result, *file)
+		}
+	}
+
+	return result, nil
 }
