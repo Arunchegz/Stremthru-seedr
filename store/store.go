@@ -21,6 +21,7 @@ const (
 	StoreNameEasyDebrid StoreName = "easydebrid"
 	StoreNameOffcloud   StoreName = "offcloud"
 	StoreNamePikPak     StoreName = "pikpak"
+	StoreNameSeedr      StoreName = "seedr" // <-- ADDED
 	StoreNamePremiumize StoreName = "premiumize"
 	StoreNameRealDebrid StoreName = "realdebrid"
 	StoreNameTorBox     StoreName = "torbox"
@@ -35,6 +36,7 @@ const (
 	StoreCodeEasyDebrid StoreCode = "ed"
 	StoreCodeOffcloud   StoreCode = "oc"
 	StoreCodePikPak     StoreCode = "pp"
+	StoreCodeSeedr      StoreCode = "sd" // <-- ADDED
 	StoreCodePremiumize StoreCode = "pm"
 	StoreCodeRealDebrid StoreCode = "rd"
 	StoreCodeTorBox     StoreCode = "tb"
@@ -47,6 +49,7 @@ var storeCodeByName = map[StoreName]StoreCode{
 	StoreNameEasyDebrid: StoreCodeEasyDebrid,
 	StoreNameOffcloud:   StoreCodeOffcloud,
 	StoreNamePikPak:     StoreCodePikPak,
+	StoreNameSeedr:      StoreCodeSeedr, // <-- ADDED
 	StoreNamePremiumize: StoreCodePremiumize,
 	StoreNameRealDebrid: StoreCodeRealDebrid,
 	StoreNameTorBox:     StoreCodeTorBox,
@@ -59,6 +62,7 @@ var storeNameByCode = map[StoreCode]StoreName{
 	StoreCodeEasyDebrid: StoreNameEasyDebrid,
 	StoreCodeOffcloud:   StoreNameOffcloud,
 	StoreCodePikPak:     StoreNamePikPak,
+	StoreCodeSeedr:      StoreNameSeedr, // <-- ADDED
 	StoreCodePremiumize: StoreNamePremiumize,
 	StoreCodeRealDebrid: StoreNameRealDebrid,
 	StoreCodeTorBox:     StoreNameTorBox,
@@ -128,10 +132,10 @@ type MagnetFile struct {
 type MagnetStatus string
 
 const (
-	MagnetStatusCached      MagnetStatus = "cached" // cached in store, ready to download instantly
+	MagnetStatusCached      MagnetStatus = "cached"
 	MagnetStatusQueued      MagnetStatus = "queued"
 	MagnetStatusDownloading MagnetStatus = "downloading"
-	MagnetStatusProcessing  MagnetStatus = "processing" // compressing / moving
+	MagnetStatusProcessing  MagnetStatus = "processing"
 	MagnetStatusDownloaded  MagnetStatus = "downloaded"
 	MagnetStatusUploading   MagnetStatus = "uploading"
 	MagnetStatusFailed      MagnetStatus = "failed"
@@ -244,8 +248,8 @@ type ListMagnetsData struct {
 
 type ListMagnetsParams struct {
 	Ctx
-	Limit    int // min 1, max 500, default 100
-	Offset   int // default 0
+	Limit    int
+	Offset   int
 	ClientIP string
 }
 
