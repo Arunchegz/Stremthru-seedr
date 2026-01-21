@@ -1,284 +1,257 @@
-package store
+package seedr
 
 import (
-	"errors"
-	"mime/multipart"
+	"net/http"
+	"path"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/MunifTanjim/stremthru/core"
-	"github.com/MunifTanjim/stremthru/internal/request"
-	"github.com/anacrolix/torrent/metainfo"
+	"github.com/MunifTanjim/stremthru/store"
 )
 
-type Ctx = request.Ctx
+/*
+Seedr Cloud Store
+=================
+Cloud-only implementation:
+- List folders as "magnets"
+- Open folder → list files
+- GenerateLink → direct Seedr CDN URL
 
-type StoreName string
+NO:
+- AddMagnet
+- RemoveMagnet
+- CheckMagnet
+- Torrent logic
+*/
 
-const (
-	StoreNameAlldebrid  StoreName = "alldebrid"
-	StoreNameDebrider   StoreName = "debrider"
-	StoreNameDebridLink StoreName = "debridlink"
-	StoreNameEasyDebrid StoreName = "easydebrid"
-	StoreNameOffcloud   StoreName = "offcloud"
-	StoreNamePikPak     StoreName = "pikpak"
-	StoreNameSeedr      StoreName = "seedr" // <-- ADDED
-	StoreNamePremiumize StoreName = "premiumize"
-	StoreNameRealDebrid StoreName = "realdebrid"
-	StoreNameTorBox     StoreName = "torbox"
-)
-
-type StoreCode string
-
-const (
-	StoreCodeAllDebrid  StoreCode = "ad"
-	StoreCodeDebrider   StoreCode = "dr"
-	StoreCodeDebridLink StoreCode = "dl"
-	StoreCodeEasyDebrid StoreCode = "ed"
-	StoreCodeOffcloud   StoreCode = "oc"
-	StoreCodePikPak     StoreCode = "pp"
-	StoreCodeSeedr      StoreCode = "sd" // <-- ADDED
-	StoreCodePremiumize StoreCode = "pm"
-	StoreCodeRealDebrid StoreCode = "rd"
-	StoreCodeTorBox     StoreCode = "tb"
-)
-
-var storeCodeByName = map[StoreName]StoreCode{
-	StoreNameAlldebrid:  StoreCodeAllDebrid,
-	StoreNameDebrider:   StoreCodeDebrider,
-	StoreNameDebridLink: StoreCodeDebridLink,
-	StoreNameEasyDebrid: StoreCodeEasyDebrid,
-	StoreNameOffcloud:   StoreCodeOffcloud,
-	StoreNamePikPak:     StoreCodePikPak,
-	StoreNameSeedr:      StoreCodeSeedr, // <-- ADDED
-	StoreNamePremiumize: StoreCodePremiumize,
-	StoreNameRealDebrid: StoreCodeRealDebrid,
-	StoreNameTorBox:     StoreCodeTorBox,
+type StoreClient struct {
+	Name   store.StoreName
+	client *Client
 }
 
-var storeNameByCode = map[StoreCode]StoreName{
-	StoreCodeAllDebrid:  StoreNameAlldebrid,
-	StoreCodeDebrider:   StoreNameDebrider,
-	StoreCodeDebridLink: StoreNameDebridLink,
-	StoreCodeEasyDebrid: StoreNameEasyDebrid,
-	StoreCodeOffcloud:   StoreNameOffcloud,
-	StoreCodePikPak:     StoreNamePikPak,
-	StoreCodeSeedr:      StoreNameSeedr, // <-- ADDED
-	StoreCodePremiumize: StoreNamePremiumize,
-	StoreCodeRealDebrid: StoreNameRealDebrid,
-	StoreCodeTorBox:     StoreNameTorBox,
-}
-
-func (sn StoreName) Code() StoreCode {
-	return storeCodeByName[sn]
-}
-
-func (sn StoreName) IsValid() bool {
-	_, ok := storeCodeByName[sn]
-	return ok
-}
-
-func (sn StoreName) Validate() (StoreName, *core.StoreError) {
-	if !sn.IsValid() {
-		return sn, ErrorInvalidStoreName(string(sn))
+func NewStoreClient(token string) *StoreClient {
+	return &StoreClient{
+		Name:   store.StoreNameSeedr,
+		client: NewClient(token),
 	}
-	return sn, nil
 }
 
-func (sc StoreCode) Name() StoreName {
-	return storeNameByCode[sc]
+func (s *StoreClient) GetName() store.StoreName {
+	return s.Name
 }
 
-func (sc StoreCode) IsValid() bool {
-	_, ok := storeNameByCode[sc]
-	return ok
+/* ---------------- Locked File Link ---------------- */
+
+type LockedFileLink string
+
+const lockedFileLinkPrefix = "stremthru://store/seedr/"
+
+func (l LockedFileLink) encodeData(folderId, fileId string) string {
+	return core.Base64Encode(folderId + ":" + fileId)
 }
 
-type UserSubscriptionStatus string
-
-const (
-	UserSubscriptionStatusPremium UserSubscriptionStatus = "premium"
-	UserSubscriptionStatusTrial   UserSubscriptionStatus = "trial"
-	UserSubscriptionStatusExpired UserSubscriptionStatus = "expired"
-)
-
-type User struct {
-	Id                 string                 `json:"id"`
-	Email              string                 `json:"email"`
-	SubscriptionStatus UserSubscriptionStatus `json:"subscription_status"`
-	HasUsenet          bool                   `json:"has_usenet"`
-}
-
-type GetUserParams struct {
-	Ctx
-}
-
-type MagnetFileType string
-
-const (
-	MagnetFileTypeFile   = "file"
-	MagnetFileTypeFolder = "folder"
-)
-
-type MagnetFile struct {
-	Idx       int    `json:"index"`
-	Link      string `json:"link,omitempty"`
-	Path      string `json:"path"`
-	Name      string `json:"name"`
-	Size      int64  `json:"size"`
-	VideoHash string `json:"video_hash,omitempty"`
-	Source    string `json:"source,omitempty"`
-}
-
-type MagnetStatus string
-
-const (
-	MagnetStatusCached      MagnetStatus = "cached"
-	MagnetStatusQueued      MagnetStatus = "queued"
-	MagnetStatusDownloading MagnetStatus = "downloading"
-	MagnetStatusProcessing  MagnetStatus = "processing"
-	MagnetStatusDownloaded  MagnetStatus = "downloaded"
-	MagnetStatusUploading   MagnetStatus = "uploading"
-	MagnetStatusFailed      MagnetStatus = "failed"
-	MagnetStatusInvalid     MagnetStatus = "invalid"
-	MagnetStatusUnknown     MagnetStatus = "unknown"
-)
-
-type CheckMagnetParams struct {
-	Ctx
-	Magnets          []string
-	ClientIP         string
-	SId              string
-	LocalOnly        bool
-	IsTrustedRequest bool
-}
-
-type CheckMagnetDataItem struct {
-	Hash   string       `json:"hash"`
-	Magnet string       `json:"magnet"`
-	Name   string       `json:"-"`
-	Size   int64        `json:"-"`
-	Status MagnetStatus `json:"status"`
-	Files  []MagnetFile `json:"files"`
-}
-
-type CheckMagnetData struct {
-	Items []CheckMagnetDataItem `json:"items"`
-}
-
-type AddMagnetData struct {
-	Id      string       `json:"id"`
-	Hash    string       `json:"hash"`
-	Magnet  string       `json:"magnet"`
-	Name    string       `json:"name"`
-	Size    int64        `json:"size"`
-	Status  MagnetStatus `json:"status"`
-	Files   []MagnetFile `json:"files"`
-	Private bool         `json:"private,omitempty"`
-	AddedAt time.Time    `json:"added_at"`
-}
-
-type AddMagnetParams struct {
-	Ctx
-	Magnet          string
-	Torrent         *multipart.FileHeader
-	ClientIP        string
-	torrentMetaInfo *metainfo.MetaInfo
-	torrentInfo     *metainfo.Info
-}
-
-func (p *AddMagnetParams) GetTorrentMeta() (*metainfo.MetaInfo, *metainfo.Info, error) {
-	if p.Torrent == nil {
-		return nil, nil, nil
-	}
-	if p.torrentMetaInfo != nil && p.torrentInfo != nil {
-		return p.torrentMetaInfo, p.torrentInfo, nil
-	}
-	f, err := p.Torrent.Open()
+func (l LockedFileLink) decodeData(encoded string) (folderId, fileId string, err error) {
+	decoded, err := core.Base64Decode(encoded)
 	if err != nil {
-		return nil, nil, err
+		return "", "", err
 	}
-	defer f.Close()
-	mi, err := metainfo.Load(f)
+	folderId, fileId, found := strings.Cut(decoded, ":")
+	if !found {
+		return "", "", err
+	}
+	return folderId, fileId, nil
+}
+
+func (l LockedFileLink) create(folderId, fileId string) string {
+	return lockedFileLinkPrefix + l.encodeData(folderId, fileId)
+}
+
+func (l LockedFileLink) parse() (folderId, fileId string, err error) {
+	encoded := strings.TrimPrefix(string(l), lockedFileLinkPrefix)
+	return l.decodeData(encoded)
+}
+
+/* ---------------- Helpers ---------------- */
+
+func toSize(size int64) int64 {
+	if size <= 0 {
+		return -1
+	}
+	return size
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// Recursively flatten files in a folder tree
+func (s *StoreClient) listFilesFlat(
+	folderID int,
+	result []store.MagnetFile,
+	parent *store.MagnetFile,
+	rootFolderID int,
+) ([]store.MagnetFile, error) {
+
+	if result == nil {
+		result = []store.MagnetFile{}
+	}
+
+	res, err := s.client.GetFolder(folderID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	p.torrentMetaInfo = mi
-	mii, err := mi.UnmarshalInfo()
+
+	source := string(s.GetName().Code())
+
+	// Files
+	for _, f := range res.Files {
+		file := &store.MagnetFile{
+			Idx:    -1,
+			Link:   LockedFileLink("").create(strconv.Itoa(rootFolderID), strconv.Itoa(f.Id)),
+			Name:   f.Name,
+			Path:   "/" + f.Name,
+			Size:   toSize(f.Size),
+			Source: source,
+		}
+
+		if parent != nil {
+			file.Path = path.Join(parent.Path, file.Name)
+		}
+
+		result = append(result, *file)
+	}
+
+	// Subfolders
+	for _, folder := range res.Folders {
+		folderFile := &store.MagnetFile{
+			Idx:    -1,
+			Name:   folder.Name,
+			Path:   "/" + folder.Name,
+			Size:   toSize(folder.Size),
+			Source: source,
+		}
+
+		if parent != nil {
+			folderFile.Path = path.Join(parent.Path, folderFile.Name)
+		}
+
+		result, err = s.listFilesFlat(folder.Id, result, folderFile, rootFolderID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return result, nil
+}
+
+/* ---------------- Store Interface ---------------- */
+
+// List all Seedr folders as "magnets"
+func (s *StoreClient) ListMagnets(params *store.ListMagnetsParams) (*store.ListMagnetsData, error) {
+	res, err := s.client.GetFolders()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	if !mii.HasV1() {
-		return nil, nil, errors.New("unsupported torrent file")
+
+	items := []store.ListMagnetsDataItem{}
+
+	for _, folder := range res.Folders {
+		item := store.ListMagnetsDataItem{
+			Id:      strconv.Itoa(folder.Id),
+			Name:    folder.Name,
+			Hash:    "",
+			Size:    toSize(folder.Size),
+			Status:  store.MagnetStatusDownloaded,
+			AddedAt: time.Now(),
+		}
+		items = append(items, item)
 	}
-	p.torrentInfo = &mii
-	return p.torrentMetaInfo, p.torrentInfo, nil
+
+	totalItems := len(items)
+	startIdx := min(params.Offset, totalItems)
+	endIdx := min(startIdx+params.Limit, totalItems)
+
+	return &store.ListMagnetsData{
+		Items:      items[startIdx:endIdx],
+		TotalItems: totalItems,
+	}, nil
 }
 
-type GetMagnetData struct {
-	Id      string       `json:"id"`
-	Name    string       `json:"name"`
-	Hash    string       `json:"hash"`
-	Size    int64        `json:"size"`
-	Status  MagnetStatus `json:"status"`
-	Files   []MagnetFile `json:"files"`
-	Private bool         `json:"private,omitempty"`
-	AddedAt time.Time    `json:"added_at"`
+// Open a Seedr folder
+func (s *StoreClient) GetMagnet(params *store.GetMagnetParams) (*store.GetMagnetData, error) {
+	folderID, err := strconv.Atoi(params.Id)
+	if err != nil {
+		return nil, err
+	}
+
+	files, err := s.listFilesFlat(folderID, nil, nil, folderID)
+	if err != nil {
+		return nil, err
+	}
+
+	var size int64 = 0
+	for i := range files {
+		size += files[i].Size
+	}
+
+	return &store.GetMagnetData{
+		Id:      params.Id,
+		Name:    "Seedr Folder",
+		Hash:    "",
+		Size:    size,
+		Status:  store.MagnetStatusDownloaded,
+		Files:   files,
+		AddedAt: time.Now(),
+	}, nil
 }
 
-type GetMagnetParams struct {
-	Ctx
-	Id       string
-	ClientIP string
+// Generate direct streaming URL
+func (s *StoreClient) GenerateLink(params *store.GenerateLinkParams) (*store.GenerateLinkData, error) {
+	_, fileId, err := LockedFileLink(params.Link).parse()
+	if err != nil {
+		e := core.NewAPIError("invalid link")
+		e.StatusCode = http.StatusBadRequest
+		return nil, e
+	}
+
+	id, err := strconv.Atoi(fileId)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := s.client.GetFile(id)
+	if err != nil {
+		return nil, err
+	}
+
+	return &store.GenerateLinkData{
+		Link: res.URL,
+	}, nil
 }
 
-type ListMagnetsDataItem struct {
-	Id      string       `json:"id"`
-	Hash    string       `json:"hash"`
-	Name    string       `json:"name"`
-	Size    int64        `json:"size"`
-	Status  MagnetStatus `json:"status"`
-	Private bool         `json:"private,omitempty"`
-	AddedAt time.Time    `json:"added_at"`
+/* ---------------- Unsupported Methods ---------------- */
+
+func (s *StoreClient) AddMagnet(params *store.AddMagnetParams) (*store.AddMagnetData, error) {
+	return nil, core.NewStoreError("Seedr is cloud-only, AddMagnet is not supported")
 }
 
-type ListMagnetsData struct {
-	Items      []ListMagnetsDataItem `json:"items"`
-	TotalItems int                   `json:"total_items"`
+func (s *StoreClient) RemoveMagnet(params *store.RemoveMagnetParams) (*store.RemoveMagnetData, error) {
+	return nil, core.NewStoreError("Seedr is cloud-only, RemoveMagnet is not supported")
 }
 
-type ListMagnetsParams struct {
-	Ctx
-	Limit    int
-	Offset   int
-	ClientIP string
+func (s *StoreClient) CheckMagnet(params *store.CheckMagnetParams) (*store.CheckMagnetData, error) {
+	return nil, core.NewStoreError("Seedr is cloud-only, CheckMagnet is not supported")
 }
 
-type RemoveMagnetData struct {
-	Id string `json:"id"`
-}
-
-type RemoveMagnetParams struct {
-	Ctx
-	Id string
-}
-
-type GenerateLinkData struct {
-	Link string `json:"link"`
-}
-
-type GenerateLinkParams struct {
-	Ctx
-	Link     string
-	ClientIP string
-}
-
-type Store interface {
-	GetName() StoreName
-	GetUser(params *GetUserParams) (*User, error)
-	CheckMagnet(params *CheckMagnetParams) (*CheckMagnetData, error)
-	AddMagnet(params *AddMagnetParams) (*AddMagnetData, error)
-	GetMagnet(params *GetMagnetParams) (*GetMagnetData, error)
-	ListMagnets(params *ListMagnetsParams) (*ListMagnetsData, error)
-	RemoveMagnet(params *RemoveMagnetParams) (*RemoveMagnetData, error)
-	GenerateLink(params *GenerateLinkParams) (*GenerateLinkData, error)
+func (s *StoreClient) GetUser(params *store.GetUserParams) (*store.User, error) {
+	return &store.User{
+		Id:                 "seedr",
+		Email:              "",
+		SubscriptionStatus: store.UserSubscriptionStatusPremium,
+	}, nil
 }
