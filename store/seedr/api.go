@@ -49,3 +49,30 @@ func (c *Client) getJSON(url string, v any) error {
 
 	return json.NewDecoder(res.Body).Decode(v)
 }
+// Account info (optional, useful to test token)
+func (c *Client) GetAccount() (*AccountResponse, error) {
+	var resp AccountResponse
+	err := c.getJSON(baseURL+"/account", &resp)
+	return &resp, err
+}
+
+// List root folders
+func (c *Client) GetFolders() (*FoldersResponse, error) {
+	var resp FoldersResponse
+	err := c.getJSON(baseURL+"/folders", &resp)
+	return &resp, err
+}
+
+// List files inside a folder
+func (c *Client) GetFolder(folderID int) (*FolderResponse, error) {
+	var resp FolderResponse
+	err := c.getJSON(fmt.Sprintf("%s/folder/%d", baseURL, folderID), &resp)
+	return &resp, err
+}
+
+// Get direct stream/download URL for a file
+func (c *Client) GetFile(fileID int) (*FileResponse, error) {
+	var resp FileResponse
+	err := c.getJSON(fmt.Sprintf("%s/file/%d", baseURL, fileID), &resp)
+	return &resp, err
+}
